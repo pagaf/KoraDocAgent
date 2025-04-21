@@ -3,7 +3,10 @@
 import ast
 import json
 import os
+from pathlib import Path
 
+import javalang
+importr re
 import git
 from colorama import Fore, Style
 from tqdm import tqdm
@@ -175,44 +178,83 @@ class FileHandler:
 
     def get_functions_and_classes(self, code_content):
         """
-        Retrieves all functions, classes, their parameters (if any), and their hierarchical relationships.
-        Output Examples: [('FunctionDef', 'AI_give_params', 86, 95, None, ['param1', 'param2']), ('ClassDef', 'PipelineEngine', 97, 104, None, []), ('FunctionDef', 'get_all_pys', 99, 104, 'PipelineEngine', ['param1'])]
-        On the example above, PipelineEngine is the Father structure for get_all_pys.
-
-        Args:
-            code_content: The code content of the whole file to be parsed.
+        Retrieves all functions, classes, their parameters (if any), and their hierarchical relationships
+        from Python, Java, and Kotlin source files.
 
         Returns:
-            A list of tuples containing the type of the node (FunctionDef, ClassDef, AsyncFunctionDef),
-            the name of the node, the starting line number, the ending line number, the name of the parent node, and a list of parameters (if any).
+            List of tuples (type, name, start_line, end_line, parent_name, parameters).
         """
-        tree = ast.parse(code_content)
-        self.add_parent_references(tree)
-        functions_and_classes = []
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef)):
-                # if node.name == "recursive_check":
-                #     import pdb; pdb.set_trace()
-                start_line = node.lineno
-                end_line = self.get_end_lineno(node)
-                # def get_recursive_parent_name(node):
-                #     now = node
-                #     while "parent" in dir(now):
-                #         if isinstance(now.parent, (ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef)):
-                #             assert 'name' in dir(now.parent)
-                #             return now.parent.name
-                #         now = now.parent
-                #     return None
-                # parent_name = get_recursive_parent_name(node)
-                parameters = (
-                    [arg.arg for arg in node.args.args] if "args" in dir(node) else []
-                )
-                all_names = [item[1] for item in functions_and_classes]
-                # (parent_name == None or parent_name in all_names) and
-                functions_and_classes.append(
-                    (type(node).__name__, node.name, start_line, end_line, parameters)
-                )
-        return functions_and_classes
+        suffix = Path(self.file_path).suffix.lower()
+
+        # Java: parse classes and methods via javalang
+        if suffix == ".java":
+            tree = javalang.parse.parse(code_content)
+            items = []
+            for _, class_node in tree.filter(javalang.tree.ClassDeclaration):
+                cls_name = class_node.name
+                start = class_node.position.line if class_node.position else 0
+                items.append(("ClassDef", cls_name, start, None, None, []))
+                for method in class_node.methods:
+                    m_name = method.name
+                    m_start = method.position.line if method.position else start
+                    params = [p.name for p in method.parameters]
+                    items.append(("FunctionDef", f"{cls_name}.{m_name}", m_start, None, cls_name, params))
+            return items
+
+        # Kotlin: simple regex-based parser for classes and functions
+        if suffix == ".kt":
+            items = []
+            lines = code_content.splitlines()
+            parent_stack = []
+            for idx, line in enumerate(lines, start=1):
+                # class declaration
+                m_cls = re.match(r"\s*(?:public\s+)?class\s+(\w+)", line)
+                if m_cls:
+                    cls_name = m_cls.group(1)
+                    parent_stack = [cls_name]
+                    items.append(("ClassDef", cls_name, idx, None, None, []))
+                    continue
+                # function declaration
+                m_fun = re.match(r"\s*fun\s+(\w+)\s*\(([^)]*)\)", line)
+                if m_fun:
+                    fn_name = m_fun.group(1)
+                    params = [p.strip().split(':')[0] for p in m_fun.group(2).split(',') if p.strip()]
+                    parent = parent_stack[-1] if parent_stack else None
+                    items.append(("FunctionDef", fn_name, idx, None, parent, params))
+            return items
+
+        # Python: parse via AST
+        if suffix == ".py":
+            tree = ast.parse(code_content)
+            self.add_parent_references(tree)
+            items = []
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    kind = type(node).__name__
+                    name = node.name
+                    start = node.lineno
+                    end = getattr(node, 'end_lineno', None) or self.get_end_lineno(node)
+                    # find parent name if nested
+                    parent = None
+                    curr = getattr(node, 'parent', None)
+                    while curr:
+                        if isinstance(curr, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                            parent = curr.name
+                            break
+                        curr = getattr(curr, 'parent', None)
+                    params = []
+                    if hasattr(node, 'args'):
+                        params = [arg.arg for arg in node.args.args]
+                    items.append((kind, name, start, end, parent, params))
+            return items
+
+        # default: unsupported file type
+        return []
+
+    def add_parent_references(self, node):
+        for child in ast.iter_child_nodes(node):
+            child.parent = node
+            self.add_parent_references(child)
 
     def generate_file_structure(self, file_path):
         """
@@ -321,42 +363,4 @@ class FileHandler:
             json_data = json.load(f)
 
         if file_path is None:
-            file_path = self.file_path
-
-        # Find the file object in json_data that matches file_path
-
-        file_dict = json_data.get(file_path)
-
-        if file_dict is None:
-            raise ValueError(
-                f"No file object found for {self.file_path} in project_hierarchy.json"
-            )
-
-        markdown = ""
-        parent_dict = {}
-        objects = sorted(file_dict.values(), key=lambda obj: obj["code_start_line"])
-        for obj in objects:
-            if obj["parent"] is not None:
-                parent_dict[obj["name"]] = obj["parent"]
-        current_parent = None
-        for obj in objects:
-            level = 1
-            parent = obj["parent"]
-            while parent is not None:
-                level += 1
-                parent = parent_dict.get(parent)
-            if level == 1 and current_parent is not None:
-                markdown += "***\n"
-            current_parent = obj["name"]
-            params_str = ""
-            if obj["type"] in ["FunctionDef", "AsyncFunctionDef"]:
-                params_str = "()"
-                if obj["params"]:
-                    params_str = f"({', '.join(obj['params'])})"
-            markdown += f"{'#' * level} {obj['type']} {obj['name']}{params_str}:\n"
-            markdown += (
-                f"{obj['md_content'][-1] if len(obj['md_content']) >0 else ''}\n"
-            )
-        markdown += "***\n"
-
-        return markdown
+            fi

@@ -158,10 +158,8 @@ class Runner:
         """刷新最新的文档信息到markdown格式文件夹中"""
         with self.runner_lock:
             # 定义 markdown 文件夹路径
-            markdown_folder = (
-                Path(self.setting.project.target_repo)
-                / self.setting.project.markdown_docs_name
-            )
+            markdown_folder = Path(self.setting.project.target_repo) / self.setting.project.markdown_docs_name
+
 
             # 删除并重新创建目录
             if markdown_folder.exists():

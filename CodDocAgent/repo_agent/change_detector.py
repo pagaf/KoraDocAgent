@@ -47,8 +47,9 @@ class ChangeDetector:
         # R=True reverses this logic, correctly treating the last commit (HEAD) as the old state and comparing it with the current staging area (new state) (Index). In this case, a new file in the staging area will correctly show as added because it does not exist in HEAD.
         diffs = repo.index.diff("HEAD", R=True)
 
+
         for diff in diffs:
-            if diff.change_type in ["A", "M"] and diff.a_path.endswith(".py"):
+            if diff.change_type in ["A", "M"] and diff.a_path.endswith((".py", ".java", ".kt")):
                 is_new_file = diff.change_type == "A"
                 staged_files[diff.a_path] = is_new_file
 
